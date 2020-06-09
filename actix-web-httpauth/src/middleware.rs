@@ -1,5 +1,6 @@
 //! HTTP Authentication middleware.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -10,7 +11,6 @@ use actix_service::{Service, Transform};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::Error;
 use futures_util::future::{self, FutureExt, LocalBoxFuture, TryFutureExt};
-use futures_util::lock::Mutex;
 use futures_util::task::{Context, Poll};
 
 use crate::extractors::{basic, bearer, AuthExtractor};
@@ -176,13 +176,13 @@ where
     }
 
     fn call(&mut self, req: Self::Request) -> Self::Future {
-        let srv = self.service.clone();
         let process_fn = self.process_fn.clone();
+        let service = Rc::clone(&self.service);
 
         async move {
             let credentials = Extract::<T>::new(&req).await.ok();
             let req = process_fn(req, credentials).await?;
-            let fut = { srv.borrow_mut().call(req) };
+            let fut = service.borrow_mut().call(req);
             fut.await
         }
         .boxed_local()
