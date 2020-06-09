@@ -10,7 +10,7 @@ use actix_web::cookie::{Cookie, CookieJar, Key, SameSite};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::header::{self, HeaderValue};
 use actix_web::{error, Error, HttpMessage};
-use futures::future::{ok, Future, Ready};
+use futures_util::future::{ok, Future, Ready};
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 use redis_async::resp::RespValue;
 use time::{self, Duration, OffsetDateTime};
@@ -20,7 +20,7 @@ use crate::redis::{Command, RedisActor};
 /// Use redis as session storage.
 ///
 /// You need to pass an address of the redis server and random value to the
-/// constructor of `RedisSessionBackend`. This is private key for cookie
+/// constructor of `RedisSession`. This is private key for cookie
 /// session, When this value is changed, all session data is lost.
 ///
 /// Constructor panics if key length is less than 32 bytes.
@@ -42,11 +42,12 @@ impl RedisSession {
             secure: false,
             max_age: Some(Duration::days(7)),
             same_site: None,
+            http_only: Some(true),
         }))
     }
 
     /// Set time to live in seconds for session value
-    pub fn ttl(mut self, ttl: u16) -> Self {
+    pub fn ttl(mut self, ttl: u32) -> Self {
         Rc::get_mut(&mut self.0).unwrap().ttl = format!("{}", ttl);
         self
     }
@@ -86,6 +87,12 @@ impl RedisSession {
     /// Set custom cookie SameSite
     pub fn cookie_same_site(mut self, same_site: SameSite) -> Self {
         Rc::get_mut(&mut self.0).unwrap().same_site = Some(same_site);
+        self
+    }
+
+    /// Set custom cookie HttpOnly policy
+    pub fn cookie_http_only(mut self, http_only: bool) -> Self {
+        Rc::get_mut(&mut self.0).unwrap().http_only = Some(http_only);
         self
     }
 
@@ -205,6 +212,7 @@ struct Inner {
     secure: bool,
     max_age: Option<Duration>,
     same_site: Option<SameSite>,
+    http_only: Option<bool>,
 }
 
 impl Inner {
@@ -278,7 +286,7 @@ impl Inner {
             let mut cookie = Cookie::new(self.name.clone(), value.clone());
             cookie.set_path(self.path.clone());
             cookie.set_secure(self.secure);
-            cookie.set_http_only(true);
+            cookie.set_http_only(self.http_only.unwrap_or(true));
 
             if let Some(ref domain) = self.domain {
                 cookie.set_domain(domain.clone());
@@ -352,7 +360,7 @@ impl Inner {
         let mut cookie = Cookie::named(self.name.clone());
         cookie.set_value("");
         cookie.set_max_age(Duration::zero());
-        cookie.set_expires(OffsetDateTime::now() - Duration::days(365));
+        cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(365));
 
         let val = HeaderValue::from_str(&cookie.to_string())
             .map_err(error::ErrorInternalServerError)?;
@@ -557,10 +565,7 @@ mod test {
             .into_iter()
             .find(|c| c.name() == "test-session")
             .unwrap();
-        assert_eq!(
-            true,
-            cookie_1.value() != cookie_2.value()
-        );
+        assert_ne!(cookie_1.value(), cookie_2.value());
 
         let result_5 = resp_5.json::<IndexResponse>().await.unwrap();
         assert_eq!(
@@ -618,7 +623,7 @@ mod test {
                 counter: 0
             }
         );
-        assert!(cookie_3.value() != cookie_2.value());
+        assert_ne!(cookie_3.value(), cookie_2.value());
 
         // Step 9: POST to logout, including session cookie #2
         //   - set-cookie actix-session will be in response with session cookie #2
@@ -632,7 +637,10 @@ mod test {
             .into_iter()
             .find(|c| c.name() == "test-session")
             .unwrap();
-        assert_ne!(OffsetDateTime::now().year(), cookie_4.expires().map(|t| t.year()).unwrap());
+        assert_ne!(
+            OffsetDateTime::now_utc().year(),
+            cookie_4.expires().map(|t| t.year()).unwrap()
+        );
 
         // Step 10: GET index, including session cookie #2 in request
         //   - set-cookie actix-session will be in response (session cookie #3)
@@ -655,6 +663,6 @@ mod test {
             .into_iter()
             .find(|c| c.name() == "test-session")
             .unwrap();
-        assert!(cookie_5.value() != cookie_2.value());
+        assert_ne!(cookie_5.value(), cookie_2.value());
     }
 }
